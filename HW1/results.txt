@@ -1,0 +1,20 @@
+6> test:bench("localhost", 8080).
+4198006
+
+----
+
+2 clients:
+4> test:bench("localhost", 8080).
+7443180
+
+4> test:bench("localhost", 8080).
+7398171
+
+----
+
+2 clients but after pool:
+4> test:bench("localhost", 8080).
+4200890
+
+4> test:bench("localhost", 8080).
+4203357
