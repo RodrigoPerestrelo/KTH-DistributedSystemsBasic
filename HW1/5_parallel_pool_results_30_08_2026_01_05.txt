@@ -1,0 +1,7 @@
+tests run in parallel
+elapsed time us
+4728957
+4791060
+4779209
+4805078
+4794544

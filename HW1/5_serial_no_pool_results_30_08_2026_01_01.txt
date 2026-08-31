@@ -1,0 +1,7 @@
+tests run in series
+elapsed time us
+4802294
+4767347
+4735842
+4771066
+4717845
