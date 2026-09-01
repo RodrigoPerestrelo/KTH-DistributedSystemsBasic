@@ -27,10 +27,14 @@ init(Port, Poolsize) ->
             error
     end.
 
+%% Helper function to create a process that runs handler function
+spawn_worker(Listen) ->
+    spawn_link(fun() -> handler(Listen) end).
+
 create_workers(0, _Listen) ->
     [];
 create_workers(N, Listen) ->
-    Pid = spawn_link(fun() -> handler(Listen) end),
+    Pid = spawn_worker(Listen),
     [Pid | create_workers(N - 1, Listen)].
 
 supervise(Listen, Workers) ->
@@ -40,7 +44,18 @@ supervise(Listen, Workers) ->
             gen_tcp:close(Listen),
             wait_for_workers(Workers),
             io:format("rudy: all workers finished cleanly.~n"),
-            ok
+            ok;
+
+        %% Handle normal worker exits (ignore)
+        {'EXIT', _Pid, normal} ->
+            supervise(Listen, Workers);
+
+        %% Auto-restart crashed worker during normal operation
+        {'EXIT', DeadPid, Reason} ->
+            io:format("rudy: worker ~p crashed (~p). Restarting replacement...~n", [DeadPid, Reason]),
+            NewPid = spawn_worker(Listen),
+            UpdatedWorkers = [NewPid | lists:delete(DeadPid, Workers)],
+            supervise(Listen, UpdatedWorkers)
     end.
 
 wait_for_workers([]) ->
@@ -76,7 +91,9 @@ request(Client) ->
                 ok;
             {tcp_error, Client, Reason} ->
                 io:format("rudy: tcp error: ~w~n", [Reason])
-            end
+        after 10000 -> %% Timeout if client does not send requests
+            io:format("rudy: client request timed out.~n")
+        end
     after
         gen_tcp:close(Client)
     end.
