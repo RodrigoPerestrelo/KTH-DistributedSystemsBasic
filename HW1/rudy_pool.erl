@@ -81,12 +81,38 @@ handler(Listen) ->
     end.
 
 request(Client) ->
+    request(Client, "").
+
+request(Client, Acc) ->
     try
         receive
             {tcp, Client, Str} ->
-                Request = http:parse_request(Str),
-                Response = reply(Request),
-                gen_tcp:send(Client, Response);
+                %this output is just for testing purposes
+                io:format("received chunk of ~p bytes~n", [length(Str)]),
+                NewAcc = Acc ++ Str,
+                case http:has_header_terminator(NewAcc) of %checkes if recived string has a complete header section
+                    false ->
+                        inet:setopts(Client, [{active, once}]),
+                        request(Client, NewAcc);
+                    true ->
+                        Request = http:parse_request(NewAcc),
+                        {_, Headers, Body} = Request,
+                        case lists:keyfind("Content-Length", 1, Headers) of %checks if full body has been received
+                            {"Content-Length", LengthStr} ->
+                                {ContentLength, _} = string:to_integer(string:trim(LengthStr)),
+                                case string:length(Body) >= ContentLength of
+                                    true ->
+                                        Response = reply(Request),
+                                        gen_tcp:send(Client, Response);
+                                    false ->
+                                        inet:setopts(Client, [{active, once}]),
+                                        request(Client, NewAcc)
+                                end;
+                            false ->
+                                Response = reply(Request),
+                                gen_tcp:send(Client, Response)
+                    end
+                end;
             {tcp_closed, Client} ->
                 ok;
             {tcp_error, Client, Reason} ->
