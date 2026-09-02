@@ -88,7 +88,7 @@ request(Client, Acc) ->
         receive
             {tcp, Client, Str} ->
                 %this output is just for testing purposes
-                io:format("received chunk of ~p bytes~n", [length(Str)]),
+                io:format("received header chunk of ~p bytes~n", [length(Str)]),
                 NewAcc = Acc ++ Str,
                 case http:has_header_terminator(NewAcc) of %checkes if recived string has a complete header section
                     false ->
@@ -96,20 +96,21 @@ request(Client, Acc) ->
                         request(Client, NewAcc);
                     true ->
                         Request = http:parse_request(NewAcc),
-                        {_, Headers, Body} = Request,
+                        {RequestLine, Headers, Body} = Request,
                         case lists:keyfind("Content-Length", 1, Headers) of %checks if full body has been received
                             {"Content-Length", LengthStr} ->
                                 {ContentLength, _} = string:to_integer(string:trim(LengthStr)),
                                 case string:length(Body) >= ContentLength of
                                     true ->
                                         Response = reply(Request),
+                                        io:format("request complete, sending reply\n"),
                                         gen_tcp:send(Client, Response);
                                     false ->
-                                        inet:setopts(Client, [{active, once}]),
-                                        request(Client, NewAcc)
+                                        receive_full_body(Client, RequestLine, Headers, Body, ContentLength)
                                 end;
                             false ->
                                 Response = reply(Request),
+                                io:format("request complete, sending reply\n"),
                                 gen_tcp:send(Client, Response)
                     end
                 end;
@@ -122,6 +123,22 @@ request(Client, Acc) ->
         end
     after
         gen_tcp:close(Client)
+    end.
+
+receive_full_body(Client, RequestLine, Headers, BodyAcc, ContentLength) ->
+    inet:setopts(Client, [{active, once}]),
+    receive
+        {tcp, Client, Str} ->
+            io:format("received body chunk of ~p bytes~n", [length(Str)]),
+            NewBodyAcc = BodyAcc ++ Str,
+            case length(NewBodyAcc) == ContentLength of
+                true ->
+                    Response = reply({RequestLine, Headers, NewBodyAcc}),
+                    io:format("request complete, sending reply\n"),
+                    gen_tcp:send(Client, Response);
+                false ->
+                    receive_full_body(Client, RequestLine, Headers, NewBodyAcc, ContentLength)
+            end
     end.
 
 reply({{get, URI, _}, _, _}) ->
