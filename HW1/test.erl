@@ -1,5 +1,5 @@
 -module(test).
--export([bench/2, fragmented_request/5]).
+-export([bench/2, fragmented_request/5, chunk_list_request/4]).
 
 bench(Host, Port) ->
     Start = erlang:system_time(micro_seconds),
@@ -37,7 +37,7 @@ fragmented_request(Host, Port, Data, ChunkSize, DelayMs) ->
     io:format("~s~n", [Response]),
     gen_tcp:close(Sock).
 
-send_chunks(Sock, [], _ChunkSize, _DelayMs) ->
+send_chunks(_Sock, [], _ChunkSize, _DelayMs) ->
     ok;
 send_chunks(Sock, Data, ChunkSize, DelayMs) ->
     {Chunk, Rest} = case length(Data) =< ChunkSize of
@@ -47,3 +47,18 @@ send_chunks(Sock, Data, ChunkSize, DelayMs) ->
     gen_tcp:send(Sock, Chunk),
     timer:sleep(DelayMs),
     send_chunks(Sock, Rest, ChunkSize, DelayMs).
+
+chunk_list_request(Host, Port, Data, DelayMs) ->
+    {ok, Sock} = gen_tcp:connect(Host, Port, [list, {active, false}]),
+    send_data(Sock, Data, DelayMs),
+    {ok, Response} = gen_tcp:recv(Sock, 0),
+    io:format("~s~n", [Response]),
+    gen_tcp:close(Sock).
+
+send_data(_Sock, [], _DelayMs) ->
+    ok;
+send_data(Sock, Data, DelayMs) ->
+    [Chunk |Rest] = Data,
+    gen_tcp:send(Sock, Chunk),
+    timer:sleep(DelayMs),
+    send_data(Sock, Rest, DelayMs).
