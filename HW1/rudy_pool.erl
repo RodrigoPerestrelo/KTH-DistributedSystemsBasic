@@ -1,6 +1,8 @@
 -module(rudy_pool).
 -export([start/2, stop/0]).
 
+-define(REQUEST_TIMEOUT, 10000).
+
 start(Port, Poolsize) ->
     register(rudy, spawn(fun() -> init(Port, Poolsize) end)).
 
@@ -82,20 +84,85 @@ handler(Listen) ->
 
 request(Client) ->
     try
-        receive
-            {tcp, Client, Str} ->
-                Request = http:parse_request(Str),
-                Response = reply(Request),
-                gen_tcp:send(Client, Response);
-            {tcp_closed, Client} ->
-                ok;
-            {tcp_error, Client, Reason} ->
-                io:format("rudy: tcp error: ~w~n", [Reason])
-        after 10000 -> %% Timeout if client does not send requests
-            io:format("rudy: client request timed out.~n")
-        end
+        request_loop(Client, "")
     after
         gen_tcp:close(Client)
+    end.
+
+request_loop(Client, Acc) ->
+    receive
+        {tcp, Client, Str} ->
+            %this output is just for testing purposes
+            io:format("received header chunk of ~p bytes~n", [length(Str)]),
+            NewAcc = Acc ++ Str,
+            case handel_header_chunk(NewAcc) of
+                {continue, _} ->
+                    inet:setopts(Client, [{active, once}]),
+                    request_loop(Client, NewAcc);
+                {done, Response} ->
+                    io:format("request complete, sending reply\n"),
+                    gen_tcp:send(Client, Response);
+                {receive_body, Request, ContentLength} ->
+                    {RequestLine, Headers, Body} = Request,
+                    case body_loop(Client, RequestLine, Headers, Body, ContentLength) of
+                        timeout -> ok;
+                        Response -> 
+                            io:format("request complete, sending reply\n"),
+                            gen_tcp:send(Client, Response)
+                    end;
+                {bad_request, Response} ->
+                    io:format("bad request, sending 400\n"),
+                    gen_tcp:send(Client, Response)
+            end;
+        {tcp_closed, Client} ->
+            ok;
+        {tcp_error, Client, Reason} ->
+            io:format("rudy: tcp error: ~w~n", [Reason])
+    after ?REQUEST_TIMEOUT -> %% Timeout if client does not send requests
+        io:format("rudy: client request timed out.~n")
+    end.
+
+handel_header_chunk(NewAcc) ->
+    case http:has_header_terminator(NewAcc) of
+        false -> {continue, NewAcc};
+        true ->
+            Request = http:parse_request(NewAcc),
+            {_RequestLine, Headers, Body} = Request,
+            case content_length(Headers) of
+                {ok, ContentLength} when length(Body) < ContentLength -> {receive_body, Request, ContentLength};
+                {ok, _ContentLength} -> {done, reply(Request)};
+                no_body -> {done, reply(Request)};
+                {error, _Reason} -> {bad_request, http:bad_request("Invalid Content Length")}
+            end
+    end.
+
+content_length(Headers) ->
+    case lists:keyfind("Content-Length", 1, Headers) of
+        {"Content-Length", LengthStr} ->
+            case string:to_integer(LengthStr) of
+                {ContentLength, _} when is_integer(ContentLength), ContentLength >= 0 ->
+                    {ok, ContentLength};
+                _ -> {error, invalid_content_length}
+            end;
+        false ->
+            no_body
+    end.
+
+body_loop(Client, RequestLine, Headers, BodyAcc, ContentLength) ->
+    inet:setopts(Client, [{active, once}]),
+    receive
+        {tcp, Client, Str} ->
+            io:format("received body chunk of ~p bytes~n", [length(Str)]),
+            NewBodyAcc = BodyAcc ++ Str,
+            case length(NewBodyAcc) == ContentLength of
+                true ->
+                    reply({RequestLine, Headers, NewBodyAcc});
+                false ->
+                    body_loop(Client, RequestLine, Headers, NewBodyAcc, ContentLength)
+            end
+    after ?REQUEST_TIMEOUT -> %% Timeout if client does not send requests
+        io:format("rudy: client request timed out.~n"),
+        timeout
     end.
 
 reply({{get, URI, _}, _, _}) ->
