@@ -1,5 +1,5 @@
 -module(test).
--export([bench/2, fragmented_request/5, chunk_list_request/4]).
+-export([bench/2, fragmented_request/5, chunk_list_request/4, timeout_request/3]).
 
 bench(Host, Port) ->
     Start = erlang:system_time(micro_seconds),
@@ -62,3 +62,10 @@ send_data(Sock, Data, DelayMs) ->
     gen_tcp:send(Sock, Chunk),
     timer:sleep(DelayMs),
     send_data(Sock, Rest, DelayMs).
+
+timeout_request(Host, Port, Data) ->
+    {ok, Sock} = gen_tcp:connect(Host, Port, [list, {active, false}]),
+    gen_tcp:send(Sock, Data),
+    io:format("sent single chunk, waiting for timeout\n"),
+    timer:sleep(20000),
+    io:format("timeout request done\n").

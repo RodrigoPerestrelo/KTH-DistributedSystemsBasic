@@ -15,13 +15,23 @@ main([TestFunction]) ->
         "cutoff" ->
             io:format("sending request with header ending in two seperate chunks\n"),
             cutoff_crlf();
+        "timeout" ->
+            io:format("sending request that waits 15s between chunks causing timeout\n"),
+            timeout();
+        "invalid_content_length" ->
+            io:format("sending request with invalid content length"),
+            invalid_content_length();
         "all" ->
             io:format("sending request in 20 byte chunks with 500 byte body\n"),
             same_sized_chunks(),
             io:format("sending request with content-length 0 and no body\n"),
             no_body(),
             io:format("sending request with header ending in two seperate chunks\n"),
-            cutoff_crlf()
+            cutoff_crlf(),
+            io:format("sending request that waits 15s between chunks causing timeout\n"),
+            timeout(),
+            io:format("sending request with invalid content length"),
+            invalid_content_length()
     end.
 
 
@@ -37,4 +47,12 @@ no_body() ->
 
 cutoff_crlf() ->
     Req = ["GET / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 38\r\n\r","\nHello this is the body of the request!"],
+    test:chunk_list_request("localhost", 8080, Req, 20).
+
+timeout() ->
+    Req = ["GET / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 500\r\n\r","\nHello this is the body of the request!"],
+    test:timeout_request("localhost", 8080, Req).
+
+invalid_content_length() ->
+    Req = ["GET / HTTP/1.1\r\nHost: localhost\r\nContent-Length: invalid\r\n\r\nHello this is the body of the request!"],
     test:chunk_list_request("localhost", 8080, Req, 20).
