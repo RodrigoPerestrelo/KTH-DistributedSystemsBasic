@@ -1,0 +1,7 @@
+tests run in parallel
+elapsed time us
+21573370
+21653753
+21676474
+21684886
+21685703

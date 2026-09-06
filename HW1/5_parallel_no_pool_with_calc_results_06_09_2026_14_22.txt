@@ -1,0 +1,7 @@
+tests run in parallel
+elapsed time us
+17108313
+17209335
+17224531
+17246642
+17156367

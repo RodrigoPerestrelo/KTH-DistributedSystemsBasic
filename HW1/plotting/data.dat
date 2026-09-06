@@ -1,0 +1,13 @@
+#Columns:
+# Testgroup | Color | Configuration | Average response time over 100 Requests
+
+1 1 "No pooling" 5264.8798
+
+1.15 2 "No pooling" 21654.8372
+1.26 3 "Pool of 2\n1 scheduler" 11080.0514
+1.37 3 "Pool of 5\n1 scheduler" 5081.9454
+1.48 4 "Pool of 5\n5 schedulers" 5046.2856
+
+1.63 2 "No pooling" 17189.0376
+1.74 3 "Pool of 5\n1 scheduler" 17339.7068
+1.85 4 "Pool of 5\n5 schedulers" 4285.4698

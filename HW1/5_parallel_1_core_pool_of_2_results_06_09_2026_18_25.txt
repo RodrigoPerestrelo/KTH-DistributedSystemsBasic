@@ -1,0 +1,7 @@
+tests run in parallel
+elapsed time us
+11060825
+11065406
+11107737
+11165990
+11000299

@@ -1,0 +1,7 @@
+tests run in parallel
+elapsed time us
+4961993
+5011632
+5030746
+5098083
+5128974
