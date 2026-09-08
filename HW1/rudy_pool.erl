@@ -1,5 +1,5 @@
 -module(rudy_pool).
--export([start/2, stop/0]).
+-export([start/2, stop/0, busy_loop/2]).
 
 -define(REQUEST_TIMEOUT, 10000).
 
@@ -166,5 +166,12 @@ body_loop(Client, RequestLine, Headers, BodyAcc, ContentLength) ->
     end.
 
 reply({{get, URI, _}, _, _}) ->
-    timer:sleep(40),
+    %timer:sleep(40),
+    simulate_work(),
     http:ok("Hello from Rudy! Requested: " ++ URI).
+
+busy_loop(0, Acc) -> Acc;
+busy_loop(N, Acc) -> busy_loop(N - 1, Acc + N).
+
+simulate_work() ->
+    busy_loop(5_000_000, 0).

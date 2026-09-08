@@ -1,0 +1,7 @@
+tests run in series
+elapsed time us
+5106311
+5207028
+5612098
+5258030
+5140932

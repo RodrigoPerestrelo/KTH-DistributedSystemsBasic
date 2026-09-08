@@ -1,0 +1,7 @@
+tests run in parallel
+elapsed time us
+17364982
+17374108
+17331273
+17350119
+17278052

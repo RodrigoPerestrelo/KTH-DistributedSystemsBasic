@@ -1,0 +1,7 @@
+tests run in parallel
+elapsed time us
+5016713
+5053858
+5048411
+5117621
+5173124

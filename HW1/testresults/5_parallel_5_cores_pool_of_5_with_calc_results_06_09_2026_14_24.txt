@@ -1,0 +1,7 @@
+tests run in parallel
+elapsed time us
+4281764
+4267856
+4319692
+4230457
+4327580
