@@ -15,8 +15,8 @@ set linetype 3 lc rgb "#55A868"   # green
 set linetype 4 lc rgb "#C44E52"   # red
 
 set label "Serial Baseline"        at 1,   graph -0.34 center front font "Arial,28"
-set label "Parallel — No Load"     at 1.315, graph -0.34 center front font "Arial,28"
-set label "Parallel — CPU Load"    at 1.74,   graph -0.34 center front font "Arial,28"
+set label "Parallel - No Load"     at 1.315, graph -0.34 center front font "Arial,28"
+set label "Parallel - CPU Load"    at 1.74,   graph -0.34 center front font "Arial,28"
 
 plot 'data.dat' using 1:4:2:xtic(3) with boxes lc variable notitle, \
      ''         using 1:($4+500):(sprintf("%.0f ms", $4)) with labels font "Arial,20" notitle
