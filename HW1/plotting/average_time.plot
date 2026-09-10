@@ -9,10 +9,10 @@ set style fill solid border -0.7
 unset key
 set xtics scale 0 font "Arial,26" offset 0,-0.5 rotate by -45.0 offset 0,0.25
 set bmargin 7
-set linetype 1 lc rgb "#808080"   # blue
-set linetype 2 lc rgb "#4C72B0"   # blue
-set linetype 3 lc rgb "#55A868"   # green
-set linetype 4 lc rgb "#C44E52"   # red
+set linetype 1 lc rgb "#808080"
+set linetype 2 lc rgb "#4C72B0"
+set linetype 3 lc rgb "#55A868"
+set linetype 4 lc rgb "#C44E52"
 
 set label "Serial Baseline"        at 1,   graph -0.34 center front font "Arial,28"
 set label "Parallel - No Load"     at 1.315, graph -0.34 center front font "Arial,28"
