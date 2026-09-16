@@ -1,0 +1,152 @@
+\documentclass[a4paper, 11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage[protrusion=true,expansion=false]{microtype}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{url}
+\usepackage{graphicx}
+
+% Color scheme
+\definecolor{codegreen}{rgb}{0.15, 0.55, 0.15}
+\definecolor{codegray}{rgb}{0.45, 0.45, 0.45}
+\definecolor{codeblue}{rgb}{0.12, 0.35, 0.75}
+\definecolor{backcolour}{rgb}{0.96, 0.97, 0.98}
+\definecolor{termbg}{rgb}{0.14, 0.15, 0.17}
+\definecolor{termfg}{rgb}{0.92, 0.92, 0.92}
+
+% Code snippet styling
+\lstdefinestyle{erlstyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen}\itshape,
+    keywordstyle=\color{codeblue}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codegray},
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,                 
+    keepspaces=true,                 
+    tabsize=2,
+    frame=single,
+    rulecolor=\color{black!10}
+}
+\lstset{style=erlstyle}
+
+% Terminal trace box styling
+\tcbset{
+    terminalbox/.style={
+        colback=termbg,
+        colupper=termfg,
+        colframe=black!65,
+        arc=3pt,
+        boxrule=1pt,
+        fontupper=\ttfamily\footnotesize,
+        left=6pt, right=6pt, top=5pt, bottom=5pt
+    }
+}
+
+\title{\textbf{Report 2: Routy}}
+\author{\textbf{Rodrigo Perestrelo, Lennard Last} \\ ID2201 Distributed Systems, Basic Course}
+\date{\today{}}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+The objective of this assignment is to design, implement, and empirically evaluate a decentralized link-state routing protocol. This protocol requires every router to independently construct an identical global graph of the network topology and locally compute optimal next-hop forwarding paths using Dijkstra's algorithm.
+
+\section{What Was Difficult and How It Was Solved}
+
+\subsection{Implementing Dijkstra's Algorithm and Routing Table Construction}
+\textbf{The Problem:} Implementing Dijkstra's algorithm in a purely functional language required iteratively relaxing paths while keeping track of the direct next-hop gateway for every destination.
+
+\textbf{The Solution:} In \texttt{update/4}, we check whether a node already exists in the sorted list via \texttt{entry/2}. If absent (returning \texttt{0}), it has already been settled and is safely discarded. If present with a greater distance, it is replaced with the shorter path and the corresponding gateway:
+
+\begin{lstlisting}[language=erlang]
+update(Node, N, Gateway, Sorted) ->
+    case entry(Node, Sorted) of
+        0 -> Sorted;
+        Length when Length > N ->
+            replace(Node, N, Gateway, Sorted);
+        Length when Length =< N ->
+            Sorted
+    end.
+\end{lstlisting}
+
+\noindent During table generation in \texttt{iterate/3}, the node with the minimal distance is extracted from the sorted list, committed to the final routing table as \texttt{\{Dest, Gateway\}}, and its adjacent links from \texttt{Map} are relaxed using \texttt{update/4} before recursing.
+
+\subsection{Preventing Broadcast Storms and Stale LSAs in Cyclic Networks}
+\textbf{The Problem:} Link-state advertisements flooded over cyclic topologies will loop indefinitely if routers lack memory of forwarded packets, causing broadcast storms and packet duplication.
+
+\textbf{The Solution:} In \texttt{hist.erl}, each router tags advertisements with an incrementing integer sequence counter $N$. A received message from router $Node$ with sequence number $R$ is discarded as \texttt{old} if $R \le \text{Counter}$. Furthermore, by initializing a router's own identity as $\{Name, \text{inf}\}$, any self-generated message that cycles back through the network is rejected:
+\begin{lstlisting}[language=erlang]
+update(Node, N, History) ->
+    case lists:keyfind(Node, 1, History) of
+        false -> {new, [{Node, N} | History]};
+        {Node, Counter} when Counter < N ->
+            NewHist = lists:keydelete(Node, 1, History),
+            {new, [{Node, N} | NewHist]};
+        {Node, Counter} when Counter >= N -> old
+    end.
+\end{lstlisting}
+
+\section{Potential Improvements to Routy}
+
+\begin{enumerate}
+    \item \textbf{Automated Event-Driven Flooding and Re-convergence:} Currently, link-state flooding (\texttt{broadcast}) and path recomputation (\texttt{update}) are triggered manually via console messages. Routy should automatically increment its sequence counter and flood an updated LSA immediately upon receiving a \texttt{'DOWN'} monitor signal, followed by a scheduled Dijkstra execution.
+    \item \textbf{Weighted Edge Costs:} The current protocol assumes unit link costs (hop count). Incorporating latency or bandwidth metrics into \texttt{map.erl} would allow Dijkstra to select throughput-optimal paths.
+    \item \textbf{LSA Garbage Collection:} The history tracking list in \texttt{hist.erl} grows indefinitely as new nodes are discovered. Implementing a time-to-live (TTL) on history records would prevent memory leaks in large topologies.
+\end{enumerate}
+
+\section{Automated Testing and Bonus Evaluation: The World}
+
+To demonstrate Routy's functionality and evaluate the questions for the bonus assignment, we implemented an automated test harness (\texttt{world\_test.erl}) that creates an 8-node intercontinental network across four regions:
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{world_map_topology.png}
+\caption{Geographical deployment of the 8-node Routy network across 4 continents. Solid cyan links designate active primary paths; the dashed orange link indicates the pre-existing redundant link between São Paulo and Nairobi.}
+\label{fig:world_map}
+\end{figure}
+
+\subsection{Can we send messages from Sydney to Oslo?}
+\textbf{Yes.} Once link states flooded through the network and routing tables were constructed, intercontinental forwarding succeeded directly across regions:
+\begin{tcolorbox}[terminalbox]
+sydney: routing message ("Prompt test: Direct intercontinental message Sydney to Oslo") \\
+oslo: received message "Prompt test: Direct intercontinental message Sydney to Oslo"
+\end{tcolorbox}
+Furthermore, multi-hop transatlantic traffic from Sao Paulo to Sydney successfully traversed North America and Europe via London:
+\begin{tcolorbox}[terminalbox]
+sao\_paulo $\rightarrow$ new\_york $\rightarrow$ london $\rightarrow$ paris $\rightarrow$ oslo $\rightarrow$ sydney
+\end{tcolorbox}
+
+\subsection{Will routing functionality still work if we stop routers or close nodes?}
+\textbf{Yes}, provided an alternate physical path exists in the topology and routers re-converge. 
+
+When London (\texttt{r2}) was terminated (\texttt{routy:stop(r2)}), its direct peers (Paris and New York) instantly caught the termination via Erlang process monitors without crashing:
+\begin{tcolorbox}[terminalbox]
+paris: exit recived from london \\
+new\_york: exit recived from london
+\end{tcolorbox}
+
+Upon running a broadcast and update cycle on surviving nodes, the network re-converged autonomously around pre-existing backup links. Retransmitting from Sao Paulo to Sydney successfully detoured through Africa without manual intervention:
+\begin{tcolorbox}[terminalbox]
+sao\_paulo $\rightarrow$ nairobi $\rightarrow$ cairo $\rightarrow$ paris $\rightarrow$ oslo $\rightarrow$ sydney
+\end{tcolorbox}
+
+\subsection{How long between a disabled network card and the delivery of a 'DOWN' message?}
+The detection latency depends directly on the failure mechanism:
+\begin{itemize}
+    \item \textbf{Router Process Crash or Shell Exit (\texttt{q().}):} Takes \textbf{$< 2$ ms} to \textbf{$< 15$ ms}. When a process dies or an OS terminates the VM, the operating system kernel closes open TCP sockets immediately with a \texttt{FIN} or \texttt{RST} packet. The remote Erlang runtime traps this socket closure instantly.
+    \item \textbf{Disabled Network Interface / Pulled Cable:} Takes \textbf{45 to 60 seconds}. When a physical link is severed, no TCP teardown packets are transmitted. Surviving nodes cannot distinguish an idle connection from a dead interface. The runtime must wait for Erlang's distribution heartbeat timer (\texttt{net\_ticktime}, default 60 seconds) to expire before flagging the node as unreachable and dispatching the \texttt{'DOWN'} message.
+\end{itemize}
+
+\section{Conclusions}
+
+This laboratory demonstrated the separation between the control plane (graph flooding and shortest-path computation) and the data plane (packet forwarding). Erlang's lightweight actor model, process monitors, and pattern matching provided clean abstractions for implementing link-state protocols. The experiments proved that sequence numbers are necessary to eliminate broadcast storms, and revealed that detecting silent physical network partitions requires tuning heartbeat intervals.
+\end{document}
