@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>World Map with City Pins</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
+<style>
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+  p { font-size: 13px; color: #94a3b8; margin-top: 0; margin-bottom: 16px; }
+  button {
+    margin-top: 16px;
+    padding: 8px 16px;
+    background-color: #38bdf8;
+    color: #0f172a;
+    border: none;
+    border-radius: 4px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { background-color: #7dd3fc; }
+  .country {
+    fill: #1e293b;
+    stroke: #475569;
+    stroke-width: 0.5px;
+  }
+  .pin {
+    cursor: pointer;
+  }
+  .pin circle {
+    fill: #f97316;
+    stroke: #fff;
+    stroke-width: 1.2px;
+  }
+  .pin text {
+    fill: #f1f5f9;
+    font-size: 11px;
+    font-weight: 600;
+    paint-order: stroke;
+    stroke: #0f172a;
+    stroke-width: 3px;
+  }
+  .pin:hover circle { fill: #fb923c; }
+  #tooltip {
+    position: absolute;
+    background: #f8fafc;
+    color: #0f172a;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    pointer-events: none;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<h1>Routy Map</h1>
+<svg id="map" width="960" height="500"></svg>
+<div id="tooltip"></div>
+<button id="download-btn">Save as PNG</button>
+
+<script>
+// --- 1. Define Cities ---
+const CITIES = [
+  ["Stockholm", 59.3293, 18.0686],
+  ["Malmö", 55.5700584, 12.8515048],
+  ["Göteborg", 57.6992853, 11.2358009],
+  ["Hamburg", 53.5511, 9.9937],
+  ["Berlin", 52.5200, 13.4050],
+  ["Frankfurt", 50.1109, 8.6821],
+  ["Paris", 48.8566, 2.3522],
+  ["Lisbon", 38.7223, -9.1393],
+  ["Porto", 41.1579, -8.6291],
+  ["Coimbra", 40.2033, -8.4103],
+  ["Toulouse", 43.6047, 1.4442],
+  ["Madrid", 40.4168, -3.7038],
+  ["Barcelona", 41.3851, 2.1734],
+  ["Milano", 45.4642, 9.1900],
+];
+
+const normalize = str => str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+const cityMap = {};
+CITIES.forEach(city => {
+  cityMap[normalize(city[0])] = { lat: city[1], lon: city[2] };
+});
+
+const PAIRS = [
+  ["stockholm","goteborg"], ["goteborg","malmo"], ["stockholm","malmo"],
+  ["malmo","hamburg"],
+  ["hamburg","berlin"], ["hamburg","frankfurt"], ["berlin","frankfurt"],
+  ["frankfurt","paris"], ["frankfurt","milano"], ["berlin","milano"],
+  ["paris","toulouse"], ["paris","barcelona"], ["toulouse","barcelona"],
+  ["toulouse","madrid"], ["barcelona","madrid"],
+  ["madrid","porto"], ["madrid","lisbon"], ["porto","lisbon"],
+  ["porto","coimbra"], ["coimbra","lisbon"]
+];
+
+// --- 2. Projection setup ---
+const width = 960, height = 500;
+const svg = d3.select("#map");
+const tooltip = d3.select("#tooltip");
+
+const projection = d3.geoMercator()
+  .center([10, 50])
+  .scale(700)
+  .translate([width / 2, height / 2]);
+
+const path = d3.geoPath(projection);
+
+// --- 3. Draw map elements ---
+d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json").then(worldData => {
+  const countries = topojson.feature(worldData, worldData.objects.countries);
+
+  svg.append("g")
+    .selectAll("path")
+    .data(countries.features)
+    .join("path")
+    .attr("class", "country")
+    .attr("d", path);
+
+  const linesGroup = svg.append("g").attr("class", "connections");
+
+  PAIRS.forEach(pair => {
+    const origin = cityMap[normalize(pair[0])];
+    const target = cityMap[normalize(pair[1])];
+
+    if (origin && target) {
+      const startPixel = projection([origin.lon, origin.lat]);
+      const endPixel = projection([target.lon, target.lat]);
+
+      linesGroup.append("line")
+        .attr("x1", startPixel[0])
+        .attr("y1", startPixel[1])
+        .attr("x2", endPixel[0])
+        .attr("y2", endPixel[1])
+        .attr("stroke", "#38bdf8")
+        .attr("stroke-width", 2)
+        .attr("stroke-dasharray", "4 4")
+        .attr("opacity", 0.75);
+    }
+  });
+
+  const pins = svg.append("g")
+    .selectAll("g")
+    .data(CITIES)
+    .join("g")
+    .attr("class", "pin")
+    .attr("transform", d => {
+      const coords = projection([d[2], d[1]]);
+      return `translate(${coords[0]}, ${coords[1]})`;
+    });
+
+  pins.append("circle").attr("r", 5);
+
+  pins.append("text")
+    .attr("x", 8)
+    .attr("y", 4)
+    .text(d => d[0]);
+
+  pins.on("mousemove", (event, d) => {
+      tooltip.style("display", "block")
+        .style("left", (event.pageX + 12) + "px")
+        .style("top", (event.pageY - 10) + "px")
+        .text(`${d[0]} (${d[2].toFixed(2)}, ${d[1].toFixed(2)})`);
+    })
+    .on("mouseleave", () => tooltip.style("display", "none"));
+
+}).catch(err => {
+  svg.append("text")
+    .attr("x", 20).attr("y", 30)
+    .attr("fill", "#f87171")
+    .text("Could not load map data: " + err);
+});
+
+// --- 4. Export logic ---
+document.getElementById("download-btn").addEventListener("click", () => {
+  const svgNode = document.getElementById("map");
+  
+  // Clone SVG node to inject explicit styling for export
+  const clone = svgNode.cloneNode(true);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  
+  const styleElement = document.createElement("style");
+  styleElement.textContent = Array.from(document.styleSheets)
+    .flatMap(sheet => {
+      try { return Array.from(sheet.cssRules).map(rule => rule.cssText); } 
+      catch { return []; }
+    }).join(" ");
+  
+  clone.insertBefore(styleElement, clone.firstChild);
+
+  const svgData = new XMLSerializer().serializeToString(clone);
+  const blob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+
+    // Background color fill
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0);
+
+    const a = document.createElement("a");
+    a.download = "map.png";
+    a.href = canvas.toDataURL("image/png");
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+});
+</script>
+</body>
+</html>
