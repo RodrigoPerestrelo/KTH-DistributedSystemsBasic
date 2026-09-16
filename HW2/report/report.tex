@@ -96,47 +96,92 @@ update(Node, N, History) ->
     end.
 \end{lstlisting}
 
-\section{Potential Improvements to Routy}
+\subsection{Solved Improvement: Autonomous Event-Driven Convergence}
+\textbf{The Problem:} In the base specification, link-state flooding (\texttt{broadcast}) and path recomputation (\texttt{update}) required manual invocation via external console messages whenever a network event occurred.
+
+\textbf{The Solution:} We eliminated manual steps by integrating autonomous reactive flooding directly into \texttt{routy.erl}. When a router traps a \texttt{'DOWN'} process exit, or executes an \texttt{add} or \texttt{remove} interface mutation, it increments sequence counter $N$, immediately broadcasts its updated interface list to all direct peers via \texttt{intf:broadcast/2}, and recomputes its table. Furthermore, upon receiving a novel link-state advertisement (\texttt{\{links, ...\}}), routers automatically update their graph and recalculate their Dijkstra table on the fly:
+
+\begin{lstlisting}[language=erlang]
+{'DOWN', Ref, process, _, _} ->
+    {ok, Down} = intf:name(Ref, Intf),
+    io:format("~w: exit recived from ~w~n", [Name, Down]),
+    Intf1 = intf:remove(Down, Intf),
+    Message = {links, Name, N, intf:list(Intf1)},
+    intf:broadcast(Message, Intf1),
+    Table1 = dijkstra:table(intf:list(Intf1), Map),
+    router(Name, N+1, Hist, Intf1, Table1, Map);
+{links, Node, R, Links} ->
+    case hist:update(Node, R, Hist) of
+        {new, Hist1} ->
+            intf:broadcast({links, Node, R, Links}, Intf),
+            Map1 = map:update(Node, Links, Map),
+            Table1 = dijkstra:table(intf:list(Intf), Map1),
+            router(Name, N, Hist1, Intf, Table1, Map1);
+        old ->
+            router(Name, N, Hist, Intf, Table, Map)
+    end;
+\end{lstlisting}
+
+\section{Remaining Potential Improvements to Routy}
 
 \begin{enumerate}
-    \item \textbf{Automated Event-Driven Flooding and Re-convergence:} Currently, link-state flooding (\texttt{broadcast}) and path recomputation (\texttt{update}) are triggered manually via console messages. Routy should automatically increment its sequence counter and flood an updated LSA immediately upon receiving a \texttt{'DOWN'} monitor signal, followed by a scheduled Dijkstra execution.
-    \item \textbf{Weighted Edge Costs:} The current protocol assumes unit link costs (hop count). Incorporating latency or bandwidth metrics into \texttt{map.erl} would allow Dijkstra to select throughput-optimal paths.
-    \item \textbf{LSA Garbage Collection:} The history tracking list in \texttt{hist.erl} grows indefinitely as new nodes are discovered. Implementing a time-to-live (TTL) on history records would prevent memory leaks in large topologies.
+    \item \textbf{Weighted Edge Costs:} The protocol currently assumes unit link costs (hop count). Incorporating latency or bandwidth metrics into \texttt{map.erl} would allow Dijkstra to select throughput-optimal paths across diverse physical connections.
+    \item \textbf{LSA Garbage Collection:} The history tracking list in \texttt{hist.erl} grows indefinitely as new nodes are discovered. Implementing a time-to-live (TTL) on history records would prevent unbounded memory growth in long-running networks.
 \end{enumerate}
 
 \section{Automated Testing and Bonus Evaluation: The World}
 
-To demonstrate Routy's functionality and evaluate the questions for the bonus assignment, we implemented an automated test harness (\texttt{world\_test.erl}) that creates an 8-node intercontinental network across four regions:
+To evaluate Routy's end-to-end performance and autonomous fault recovery, we implemented a 14-node European network harness (\texttt{world\_test.erl}) interconnecting major transit centers across Scandinavia, Central Europe, and the Iberian Peninsula.
+
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.95\textwidth]{advanced_map_topology.png}
-\caption{Geographical deployment of the 8-node Routy network across 4 continents. Solid cyan links designate active primary paths; the dashed orange link indicates the pre-existing redundant link between São Paulo and Nairobi.}
+\includegraphics[width=0.65\textwidth]{world_map.png}
+\caption{Topology of the 14-node network harness. Multi-homed connections provide redundancy across the Iberian and Central European corridors.}
 \label{fig:world_map}
 \end{figure}
 
-\subsection{Can we send messages from Sydney to Oslo?}
-\textbf{Yes.} Once link states flooded through the network and routing tables were constructed, intercontinental forwarding succeeded directly across regions:
+\subsection{Can we send messages across distant nodes in the topology?}
+\textbf{Yes.} Once initial interface advertisements flooded through the network and Dijkstra tables converged, multi-hop routing succeeded across the continent from Stockholm to Lisbon:
 \begin{tcolorbox}[terminalbox]
-sydney: routing message ("Prompt test: Direct intercontinental message Sydney to Oslo") \\
-oslo: received message "Prompt test: Direct intercontinental message Sydney to Oslo"
+1> world\_test:route\_message(stockholm, lisbon, ola). \\
+routing message: "ola" \\
+from: stockholm $\rightarrow$ to: lisbon \\
+stockholm: routing message ("ola") \\
+malmo: routing message ("ola") \\
+hamburg: routing message ("ola") \\
+frankfurt: routing message ("ola") \\
+paris: routing message ("ola") \\
+barcelona: routing message ("ola") \\
+madrid: routing message ("ola") \\
+lisbon: received message "ola"
 \end{tcolorbox}
-Furthermore, multi-hop transatlantic traffic from Sao Paulo to Sydney successfully traversed North America and Europe via London:
-\begin{tcolorbox}[terminalbox]
-sao\_paulo $\rightarrow$ new\_york $\rightarrow$ london $\rightarrow$ paris $\rightarrow$ oslo $\rightarrow$ sydney
-\end{tcolorbox}
+\noindent The computed primary shortest path traverses 7 intermediate hops:
+$$\text{stockholm} \rightarrow \text{malmo} \rightarrow \text{hamburg} \rightarrow \text{frankfurt} \rightarrow \text{paris} \rightarrow \text{barcelona} \rightarrow \text{madrid} \rightarrow \text{lisbon}$$
 
 \subsection{Will routing functionality still work if we stop routers or close nodes?}
-\textbf{Yes}, provided an alternate physical path exists in the topology and routers re-converge. 
+\textbf{Yes}, provided an alternate physical path exists in the topology.
 
-When London (\texttt{r2}) was terminated (\texttt{routy:stop(r2)}), its direct peers (Paris and New York) instantly caught the termination via Erlang process monitors without crashing:
+We halted the critical Iberian junction router Barcelona (\texttt{r10}) using \texttt{world\_test:kill\_router(barcelona)}. Its monitored peers (\texttt{paris}, \texttt{madrid}, and \texttt{toulouse}) caught the termination exit immediately:
 \begin{tcolorbox}[terminalbox]
-paris: exit recived from london \\
-new\_york: exit recived from london
+paris: exit recived from barcelona \\
+stop \\
+madrid: exit recived from barcelona \\
+toulouse: exit recived from barcelona
 \end{tcolorbox}
 
-Upon running a broadcast and update cycle on surviving nodes, the network re-converged autonomously around pre-existing backup links. Retransmitting from Sao Paulo to Sydney successfully detoured through Africa without manual intervention:
+Thanks to our autonomous re-convergence enhancement, the surviving neighbors automatically broadcast their updated interface lists and recomputed their tables without manual console commands. Dispatching another message from Stockholm to Lisbon succeeded, dynamically routing around the dead Barcelona node via Toulouse:
 \begin{tcolorbox}[terminalbox]
-sao\_paulo $\rightarrow$ nairobi $\rightarrow$ cairo $\rightarrow$ paris $\rightarrow$ oslo $\rightarrow$ sydney
+3> world\_test:route\_message(stockholm, lisbon, ola). \\
+routing message: "ola" \\
+from: stockholm $\rightarrow$ to: lisbon \\
+stockholm: routing message ("ola") \\
+malmo: routing message ("ola") \\
+hamburg: routing message ("ola") \\
+frankfurt: routing message ("ola") \\
+paris: routing message ("ola") \\
+toulouse: routing message ("ola") \\
+madrid: routing message ("ola") \\
+lisbon: received message "ola"
 \end{tcolorbox}
 
 \subsection{How long between a disabled network card and the delivery of a 'DOWN' message?}
@@ -148,5 +193,6 @@ The detection latency depends directly on the failure mechanism:
 
 \section{Conclusions}
 
-This laboratory demonstrated the separation between the control plane (graph flooding and shortest-path computation) and the data plane (packet forwarding). Erlang's lightweight actor model, process monitors, and pattern matching provided clean abstractions for implementing link-state protocols. The experiments proved that sequence numbers are necessary to eliminate broadcast storms, and revealed that detecting silent physical network partitions requires tuning heartbeat intervals.
+This laboratory demonstrated the separation between the control plane (graph flooding and shortest-path computation) and the data plane (packet forwarding). Erlang's lightweight actor model, process monitors, and pattern matching provided clean abstractions for implementing link-state protocols. Integrating autonomous event-driven flooding eliminated the need for manual intervention, enabling self-healing network behavior upon node failure.
+
 \end{document}

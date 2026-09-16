@@ -1,5 +1,5 @@
 -module(world_test).
--export([setup_world/0, route_message/3, list_routers/0, teardown_world/0, kill_router/1, get_network_status/0]).
+-export([setup_world/0, route_message/3, list_routers/0, teardown_world/0, kill_router/1, get_network_status/0, start_router/1]).
 
 routers() ->
     [
@@ -35,18 +35,63 @@ cons() ->
         {r13, r12}, {r12, r13} % coimbra <> lisbon
     ].
 
+%% Resolves a router process PID across shells or locally.
+%% Accepts either a registration tag (e.g. 'r1') or a city name (e.g. 'stockholm').
+whereis_remote(Key) ->
+    City = case lists:keyfind(Key, 1, routers()) of
+        {_Reg, Name} -> Name;
+        false ->
+            case lists:keyfind(Key, 2, routers()) of
+                {_Reg, Name} -> Name;
+                false -> Key
+            end
+    end,
+    {Reg, _} = lists:keyfind(City, 2, routers()),
+
+    %% Check the current shell first; if absent, query the remote Erlang node
+    case whereis(Reg) of
+        Pid when is_pid(Pid) -> 
+            Pid;
+        undefined ->
+            case node() of
+                'nonode@nohost' -> undefined;
+                CurrentNode ->
+                    Host = hd(tl(string:tokens(atom_to_list(CurrentNode), "@"))),
+                    RemoteNode = list_to_atom(atom_to_list(City) ++ "@" ++ Host),
+                    net_adm:ping(RemoteNode),
+                    rpc:call(RemoteNode, erlang, whereis, [Reg])
+            end
+    end.
+
+start_router(Name) ->
+    {Reg, Name} = lists:keyfind(Name, 2, routers()),
+    routy:start(Reg, Name).
+
+%% Wires the network topology. Supports both execution environments:
+%% 1. Single-shell fallback: uses test:setup/2 to start and link all nodes locally.
+%% 2. Distributed multi-shell: discovers remote PIDs across nodes and adds interfaces.
 setup_world() ->
     Routers = routers(),
     Cons = cons(),
-    test:setup(Routers, Cons),
-    ok.
+    case node() of
+        'nonode@nohost' -> 
+            test:setup(Routers, Cons);
+        _ ->
+            lists:foreach(fun({R1, R2}) ->
+                {R2, Name2} = lists:keyfind(R2, 1, routers()),
+                (whereis_remote(R1)) ! {add, Name2, whereis_remote(R2)}
+            end, Cons),
+            timer:sleep(2000),
+            ok
+    end.
 
 teardown_world() ->
     Routers = routers(),
     test:stop_all(Routers).
 
 kill_router(Name) ->
-    {Pid, _} = lists:keyfind(Name, 2, routers()),
+    {Reg, _} = lists:keyfind(Name, 2, routers()),
+    Pid = whereis_remote(Reg),
     Pid ! stop.
 
 list_routers() ->
@@ -54,7 +99,8 @@ list_routers() ->
     lists:foldl( fun({_Pid, Name}, Acc) -> lists:usort([Name] ++ Acc) end, [], Routers).
 
 route_message(From, To, Msg) ->
-    {SenderPid, _} = lists:keyfind(From, 2, routers()),
+    {Reg, _} = lists:keyfind(From, 2, routers()),
+    SenderPid = whereis_remote(Reg),
     io:format("routing message: \"~s\"~nfrom: ~w~nto: ~w~n",[Msg, From, To]),
     SenderPid ! {send, To, Msg},
     timer:sleep(1000).
