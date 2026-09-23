@@ -37,7 +37,7 @@ loop(Name, Log, Peers, Sleep, Jitter, Time) ->
         Message = {hello, rand:uniform(100)},
         Selected ! {msg, ActualTime, Message},
         jitter(Jitter),
-        Log ! {log, Name, Time, {sending, Message}},
+        Log ! {log, Name, ActualTime, {sending, Message}},
         loop(Name, Log, Peers, Sleep, Jitter, ActualTime)
     end.
 

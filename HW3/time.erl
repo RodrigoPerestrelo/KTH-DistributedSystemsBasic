@@ -1,27 +1,26 @@
 -module(time).
 -export([zero/0, inc/2, merge/2, leq/2, clock/1, update/3, safe/2]).
 
-%% Worker Side
+-define(BACKEND, time_lamport).
+% -define(BACKEND, time_vector).
 
 zero() ->
-    0.
+    ?BACKEND:zero().
 
-inc(_, T) ->
-    T + 1.
+inc(Name, T) ->
+    ?BACKEND:inc(Name, T).
 
 merge(Ti, Tj) ->
-    erlang:max(Ti, Tj).
+    ?BACKEND:merge(Ti, Tj).
 
 leq(Ti, Tj) ->
-    Ti =< Tj.
-
-%% Logger Side
+    ?BACKEND:leq(Ti, Tj).
 
 clock(Nodes) ->
-    [{Node, zero()} || Node <- Nodes].
+    ?BACKEND:clock(Nodes).
 
 update(Node, Time, Clock) ->
-    lists:keystore(Node, 1, Clock, {Node, Time}).
+    ?BACKEND:update(Node, Time, Clock).
 
 safe(Time, Clock) ->
-    lists:all(fun({_Node, T}) -> leq(Time, T) end, Clock).
+    ?BACKEND:safe(Time, Clock).
