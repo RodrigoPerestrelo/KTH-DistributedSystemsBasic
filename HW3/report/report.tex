@@ -169,12 +169,16 @@ High Jitter     & 10  & 1000 & 28 & 12 \\
 \end{itemize}
 
 \section{Optional Task: Vector Clocks (Bonus)}
+The optional task of the assignment was to implement a vector clock.
 
 \subsection{Comparison: Lamport Clocks vs. Vector Clocks}
+A scalar Lamport timestamp collapses causal history into a single integer, which is sufficient to guarantee $A \rightarrow B \implies L(A) < L(B)$, but not the converse: two unrelated, concurrent events may receive any relative timestamp. Consequently, \texttt{safe/2} for Lamport clocks must conservatively wait for \emph{every} monitored worker to advance past $T$, since a scalar value carries no information about which nodes an event actually depends on. A vector clock replaces the single counter with one counter per process, encoding precisely which nodes causally contributed to a given event and how many of their events did so. This allows \texttt{leq/2} to determine not just an order between two timestamps, but whether two events are causally related at all, or concurrent. The practical consequence for the logger is that \texttt{safe/2} only needs confirmation from the nodes named in a given event's vector, rather than from the whole system.
 
 \subsection{Implementation Details}
+Vector time is represented as a list of \texttt{\{Name, Counter\}} pairs rather than a fixed-size tuple, keeping the representation independent of the number of nodes in the system. \texttt{zero/0} returns \texttt{[]}, meaning that no events from any process have yet been observed. \texttt{inc/2} increments a process's own entry, adding it if absent. \texttt{merge/2} takes the pairwise maximum of matching entries, carrying through entries present in only one of the two vectors unchanged. \texttt{leq/2} performs a componentwise comparison, treating any entry absent from the other vector as implicitly zero. \texttt{clock/1} similarly starts as \texttt{[]}: unlike the Lamport clock, it does not need to be seeded with known node names, since \texttt{update/3} adds entries the first time each node is heard from. Lastly, \texttt{safe/2} reduces to exactly the same componentwise condition as \texttt{leq/2} so it is implemented as a direct call to \texttt{leq/2}.
 
 \subsection{Experimental Results and Benefits}
+Measured under the same conditions as the Low Jitter configuration in Table~\ref{tab:queue_results}, the average holdback queue length dropped from around 7 entries with Lamport clocks to less than 1 with vector clocks. This is a direct result of the narrower safety condition: Lamport's \texttt{safe/2} requires all nodes to catch up before any event can be released, so the queue is bottlenecked by whichever node is currently slowest, regardless of relevance. Vector clocks only require the specific nodes named in an event's own vector to have caught up, so most events become safe almost as soon as their directly relevant sender and receiver have reported in. The tradeoff is that each timestamp grows with the number of active nodes rather than remaining a single integer, and comparisons are componentwise rather than a single integer comparison.
 
 \section{Conclusions}
 

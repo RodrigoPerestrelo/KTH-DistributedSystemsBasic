@@ -10,17 +10,18 @@ stop(Logger) ->
 init(Nodes) ->
     Clock = time:clock(Nodes),
     Queue = [],
-    loop(Clock, Queue).
+    loop(Clock, Queue, 0, 0).
 
-loop(Clock, Queue) ->
+loop(Clock, Queue, Count, QueueLengthSum) ->
     receive
         {log, From, Time, Msg} ->
             NewClock = time:update(From, Time, Clock),
             NewQueue = insert({log, From, Time, Msg}, Queue),
             FlushedQueue = flush(NewClock, NewQueue),
-            loop(NewClock, FlushedQueue);
+            loop(NewClock, FlushedQueue, Count+1, QueueLengthSum+length(FlushedQueue));
         stop ->
-            io:format("Logger was stopped. Entries remaining from Queue: ~p~n", [length(Queue)]),
+            io:format("Logger was stopped. Entries remaining from Queue: ~p~nAverage queue length was: ~.2f~n", 
+            [length(Queue), QueueLengthSum/Count]),
             ok
     end.
 
