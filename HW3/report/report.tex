@@ -150,11 +150,11 @@ We evaluated queue retention across three representative test configurations:
 \small
 \begin{tabular}{lcccc}
 \toprule
-\textbf{Configuration} & \textbf{Sleep (ms)} & \textbf{Jitter (ms)} & \textbf{Max Queue Entries} & \textbf{Remaining at Stop} \\
+\textbf{Configuration} & \textbf{Sleep (ms)} & \textbf{Jitter (ms)} & \textbf{Remaining at Stop} \\
 \midrule
-Low Jitter      & 100 & 10   & 4  & 8  \\
-Moderate Jitter & 50  & 500  & 15 & 12 \\
-High Jitter     & 10  & 1000 & 28 & 12 \\
+Low Jitter      & 100 & 10   & 2  \\
+Moderate Jitter & 50  & 500  & 3 \\
+High Jitter     & 10  & 1000 & 11 \\
 \bottomrule
 \end{tabular}
 \caption{Holdback queue performance under varying latency conditions.}
@@ -163,9 +163,9 @@ High Jitter     & 10  & 1000 & 28 & 12 \\
 
 \textbf{Analysis of Results:}
 \begin{itemize}
-    \item \textbf{Low Jitter (\texttt{Sleep = 100, Jitter = 10}):} Workers report actions to the logger almost immediately after peer communication. Clocks across all nodes advance evenly, enabling the logger to release messages rapidly. The queue remains shallow, peaking at 4 entries.
-    \item \textbf{High Jitter (\texttt{Sleep = 10, Jitter = 1000}):} With high jitter and rapid message transmission, one worker's log entry may be substantially delayed while other nodes continue exchanging messages and advancing their Lamport clocks. Because the logger cannot flush an entry until the slowest node catches up, events from faster nodes accumulate, causing the holdback queue to swell to 28 entries.
-    \item \textbf{Remaining Entries at Termination:} In all executions, a small residual queue remains unprinted when \texttt{stop} is received. Because the simulation halts abruptly, active workers cease transmitting, leaving the logger unable to advance the clocks of lagging nodes to confirm safety for the final buffered entries.
+    \item \textbf{Low Jitter (\texttt{Sleep = 100, Jitter = 10}):} Workers report actions to the logger almost immediately after peer communication. Because delay variance is minimal, clocks across all nodes advance evenly. The holdback queue flushes almost continuously, leaving a minimal backlog (only 2 entries) when halted.
+    \item \textbf{Moderate and High Jitter (\texttt{Jitter = 200--1000}):} As jitter increases relative to sleep time, message delivery variance widens. A single delayed worker message stalls the global safety barrier (\texttt{time:safe/2}), forcing messages from more active peers to remain buffered until lagging clocks catch up.
+    \item \textbf{Residual Entries at Termination:} In all executions, a small set of unprinted entries remains in the queue when \texttt{stop} is received. Because the simulation halts abruptly, workers cease transmitting, leaving the logger unable to advance the clocks of lagging nodes to confirm safety for the final buffered messages.
 \end{itemize}
 
 \section{Optional Task: Vector Clocks (Bonus)}
