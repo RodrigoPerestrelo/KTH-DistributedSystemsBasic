@@ -1,0 +1,183 @@
+\documentclass[a4paper, 11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage[protrusion=true,expansion=false]{microtype}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{url}
+\usepackage{graphicx}
+
+\definecolor{codegreen}{rgb}{0.15, 0.55, 0.15}
+\definecolor{codegray}{rgb}{0.45, 0.45, 0.45}
+\definecolor{codeblue}{rgb}{0.12, 0.35, 0.75}
+\definecolor{backcolour}{rgb}{0.96, 0.97, 0.98}
+\definecolor{termbg}{rgb}{0.14, 0.15, 0.17}
+\definecolor{termfg}{rgb}{0.92, 0.92, 0.92}
+
+\lstdefinestyle{erlstyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen}\itshape,
+    keywordstyle=\color{codeblue}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codegray},
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,                 
+    keepspaces=true,                 
+    tabsize=2,
+    frame=single,
+    rulecolor=\color{black!10}
+}
+\lstset{style=erlstyle}
+
+\tcbset{
+    terminalbox/.style={
+        colback=termbg,
+        colupper=termfg,
+        colframe=black!65,
+        arc=3pt,
+        boxrule=1pt,
+        fontupper=\ttfamily\footnotesize,
+        left=6pt, right=6pt, top=5pt, bottom=5pt
+    }
+}
+
+\title{\textbf{Report 3: Loggy}}
+\author{\textbf{Rodrigo Perestrelo, Lennard Last} \\ ID2201 Distributed Systems, Basic Course}
+\date{\today{}}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+The objective of this assignment is to design and evaluate \texttt{Loggy}, a centralized logging service that receives event streams from concurrent worker processes. Because message delivery across separate Erlang actor channels is asynchronous, messages frequently arrive at the logger out of causal order. We address this challenge by introducing an abstract logical \texttt{time} module, augmenting workers with Lamport timestamps, and implementing a holdback queue within the logger to buffer events until they can be safely printed in causal sequence.
+
+\section{The Time Module and Architectural Modifications}
+
+To maintain strict modularity, logical clock semantics are encapsulated entirely inside \texttt{time.erl}. In our Lamport implementation, time is modeled as an integer counter starting at 0 (\texttt{zero/0}). The module provides arithmetic for workers to advance (\texttt{inc/2}), merge causally upon message receipt (\texttt{merge/2}), and compare timestamps (\texttt{leq/2}). For the logger, it manages a list of worker-timestamp pairs (\texttt{clock/1}), updates them upon event arrival (\texttt{update/3}), and checks whether all nodes have advanced past a given timestamp (\texttt{safe/2}). Neither the workers nor the logger perform direct clock arithmetic or inspect internal representations.
+
+\subsection{Modifications to the Worker Process}
+In the naive baseline, workers possessed no awareness of time, tagging all outbound log entries with a placeholder atom (\texttt{na}). To enable causal tracking, we enhanced the worker process loop in three key aspects:
+\begin{enumerate}
+    \item \textbf{State Augmentation:} The worker loop was modified to maintain an internal logical clock initialized via \texttt{time:zero()}.
+    \item \textbf{Causal Synchronization on Message Receipt:} When receiving a peer message \texttt{\{msg, MsgTime, Msg\}}, the worker cannot simply trust its local clock. It updates its state by taking the causal merge of its internal time and the incoming timestamp, followed by an increment (\texttt{time:inc(Name, time:merge(Time, MsgTime))}). This ensures the worker's clock immediately advances past the sender's event horizon.
+    \item \textbf{Timestamp Piggybacking on Transmission:} When sending a peer message, the worker advances its local clock (\texttt{time:inc/2}) and tags both the network message dispatched to the peer and the event log dispatched to the logger with this updated timestamp.
+\end{enumerate}
+
+\subsection{Modifications to the Logger}
+The initial logger was entirely passive and unbuffered: upon receiving any log event, it executed an immediate \texttt{io:format/2} to stdout. We re-engineered the logger into an active ordering coordinator:
+\begin{enumerate}
+    \item \textbf{Global Worker Progress Tracking:} The logger was given an initial list of active worker identifiers (\texttt{Nodes}). It initializes an internal tracking structure (\texttt{Clock}) that records the latest logical timestamp received from every node in the system.
+    \item \textbf{Holdback Queue Buffering:} Instead of printing immediately, incoming log events are placed into a holdback queue sorted in ascending order of logical timestamp using \texttt{time:leq/2}.
+    \item \textbf{Conditional Safe Flush:} Upon receiving any new entry and updating the sender's clock entry, the logger inspects the front of the queue. An event with timestamp $T$ is released and printed if and only if \texttt{time:safe(T, Clock)} confirms that every monitored worker has reported a timestamp $\ge T$.
+\end{enumerate}
+
+\subsection{System-Wide Architectural Impact}
+These additions fundamentally alter the system dynamics:
+\begin{itemize}
+    \item \textbf{Decoupling Delivery from Ingestion:} The logger's display order is completely decoupled from the non-deterministic arrival order over Erlang's asynchronous channels. Network delays and processing jitter no longer corrupt the observed event chronology.
+    \item \textbf{Strict Modularity via Abstract API:} Neither the worker nor the logger contains integer arithmetic, list manipulation, or pattern matching tied to Lamport representation. The worker only knows how to increment and merge timestamps; the logger only knows how to register progress and query event safety. This allows replacing scalar Lamport clocks with vector clocks without changing a single line of worker or logger application logic.
+\end{itemize}
+
+\section{Analysis of the Initial Implementation and Causal Order}
+
+\subsection{Empirical Detection of Out-of-Order Events and Jitter Impact}
+In the naive logger, workers dispatched log messages immediately upon receiving or sending a peer message, while an artificial delay (\texttt{jitter}) was injected between peer delivery and log dispatch. Because Erlang only guarantees FIFO delivery pairwise between two specific processes, the arrival order at the logger across multiple workers was non-deterministic.
+
+When executing the unbuffered logger with \texttt{test:run(50, 200)}, out-of-order execution was detected in two ways:
+
+\begin{tcolorbox}[terminalbox]
+log: 2 john \{received,\{hello,91\}\} \\
+log: 2 george \{received,\{hello,27\}\} \\
+log: 4 george \{received,\{hello,51\}\} \\
+log: 2 john \{sending,\{hello,51\}\} \\
+log: 0 ringo \{sending,\{hello,27\}\} \\
+log: 6 ringo \{received,\{hello,61\}\} \\
+log: 0 paul \{sending,\{hello,91\}\}
+\end{tcolorbox}
+
+\begin{enumerate}
+    \item \textbf{Causal Inversion (Receive before Send):} At line 1, \texttt{john} logged the receipt of message \texttt{\{hello, 91\}} at logical time $2$. However, the matching transmission event from \texttt{paul} at time $0$ did not print until line 7. A cause cannot occur after its effect; the receipt log arrived at the logger before the sender's log due to network jitter.
+    \item \textbf{Monotonicity Inversion:} Between lines 3, 4, and 5, the logged timestamps printed to the screen were $4$, $2$, and $0$. Time flowed backwards in the output stream.
+\end{enumerate}
+
+\textbf{Can Jitter Eliminate Out-of-Order Entries?} \\
+Experimenting with the jitter parameter demonstrates that increasing jitter widens the latency variance between peer delivery and logging, significantly increasing the frequency of out-of-order arrivals. Conversely, reducing jitter decreases this probability. However, setting jitter to 0 \textbf{cannot eliminate out-of-order prints entirely}. Because the BEAM virtual machine preemptively schedules Erlang processes across multiple operating system threads, non-deterministic execution scheduling can still cause a receiving worker's log to reach the logger before the sending worker is scheduled to dispatch its own log message.
+
+\subsection{Causal Guarantees vs. Physical Reality}
+\begin{itemize}
+    \item \textbf{What is always true?}
+    Lamport's clock condition guarantees that if event $A$ causally precedes event $B$ ($A \rightarrow B$), then $L(A) < L(B)$. Consequently, every send event strictly precedes its matching receive event in logical time ($L(\text{send}) < L(\text{receive})$). Furthermore, event timestamps local to any single worker process are strictly monotonic.
+    \item \textbf{What is sometimes true?}
+    If $L(A) < L(B)$, it is only \textbf{sometimes true} that $A$ physically preceded $B$ or causally influenced $B$. If $A$ and $B$ occurred on separate workers without message exchange, they are concurrent ($A \parallel B$). Lamport timestamps linearize concurrent events into an arbitrary total order that respects causality, but does not reflect real-time physical concurrency.
+    \item \textbf{How do you play it safe?}
+    Since an individual worker's events are strictly monotonic, once the logger observes a timestamp $T_k$ from worker $k$, that worker will never emit an event with timestamp $< T_k$. Therefore, an event at timestamp $T$ in the holdback queue is safe to release only when \textbf{all} monitored workers have reported a timestamp $\ge T$.
+    \item \textbf{What does the final log tell us, and did events happen in that order?}
+    The final log presents a valid \textbf{total ordering consistent with causality} (a topological sort of the distributed system's causal graph). Causally dependent events are guaranteed to have occurred in the order logged. However, for concurrent events, the log order is an artifact of Lamport tie-breaking and does not imply that events occurred in that exact sequence in physical wall-clock time.
+\end{itemize}
+
+\section{Implementation: Lamport Clocks and Holdback Queue}
+
+\subsection{Holdback Queue Mechanics}
+The logger maintains the worker clock map, a timestamp-sorted holdback queue, and a high-water mark tracking maximum queue size. Incoming messages are inserted into the queue in ascending order using \texttt{time:leq/2}. The queue is then processed sequentially: safe items are flushed and logged, while processing halts at the first unsafe entry.
+
+\begin{lstlisting}[language=erlang]
+loop(Clock, Queue, MaxLen) ->
+    receive
+        {log, From, Time, Msg} ->
+            NewClock = time:update(From, Time, Clock),
+            NewQueue = insert_sorted({log, From, Time, Msg}, Queue),
+            UpdatedMax = erlang:max(MaxLen, length(NewQueue)),
+            RemainingQueue = flush_safe(NewClock, NewQueue),
+            loop(NewClock, RemainingQueue, UpdatedMax);
+        stop ->
+            io:format("Logger stopped. Remaining unsent in queue: ~p~n", [length(Queue)]),
+            ok
+    end.
+\end{lstlisting}
+
+\subsection{Experimental Evaluation and Queue Dynamics}
+We evaluated queue retention across three representative test configurations:
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Configuration} & \textbf{Sleep (ms)} & \textbf{Jitter (ms)} & \textbf{Max Queue Entries} & \textbf{Remaining at Stop} \\
+\midrule
+Low Jitter      & 100 & 10   & 4  & 8  \\
+Moderate Jitter & 50  & 500  & 15 & 12 \\
+High Jitter     & 10  & 1000 & 28 & 12 \\
+\bottomrule
+\end{tabular}
+\caption{Holdback queue performance under varying latency conditions.}
+\label{tab:queue_results}
+\end{table}
+
+\textbf{Analysis of Results:}
+\begin{itemize}
+    \item \textbf{Low Jitter (\texttt{Sleep = 100, Jitter = 10}):} Workers report actions to the logger almost immediately after peer communication. Clocks across all nodes advance evenly, enabling the logger to release messages rapidly. The queue remains shallow, peaking at 4 entries.
+    \item \textbf{High Jitter (\texttt{Sleep = 10, Jitter = 1000}):} With high jitter and rapid message transmission, one worker's log entry may be substantially delayed while other nodes continue exchanging messages and advancing their Lamport clocks. Because the logger cannot flush an entry until the slowest node catches up, events from faster nodes accumulate, causing the holdback queue to swell to 28 entries.
+    \item \textbf{Remaining Entries at Termination:} In all executions, a small residual queue remains unprinted when \texttt{stop} is received. Because the simulation halts abruptly, active workers cease transmitting, leaving the logger unable to advance the clocks of lagging nodes to confirm safety for the final buffered entries.
+\end{itemize}
+
+\section{Optional Task: Vector Clocks (Bonus)}
+
+\subsection{Comparison: Lamport Clocks vs. Vector Clocks}
+
+\subsection{Implementation Details}
+
+\subsection{Experimental Results and Benefits}
+
+\section{Conclusions}
+
+This laboratory confirmed that asynchronous message passing across multiple actor processes cannot ensure causal consistency without explicit ordering mechanisms. While Erlang provides FIFO guarantees point-to-point, multi-process dependencies require logical timestamps. Implementing Lamport time across decoupled \texttt{worker}, \texttt{time}, and \texttt{mylogger} modules resolved causal inversions, ensuring that all log entries output in a valid total order consistent with causal precedence.
+
+\end{document}
