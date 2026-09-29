@@ -1,0 +1,191 @@
+\documentclass[a4paper, 11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage[protrusion=true,expansion=false]{microtype}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{url}
+\usepackage{graphicx}
+
+\definecolor{codegreen}{rgb}{0.15, 0.55, 0.15}
+\definecolor{codegray}{rgb}{0.45, 0.45, 0.45}
+\definecolor{codeblue}{rgb}{0.12, 0.35, 0.75}
+\definecolor{backcolour}{rgb}{0.96, 0.97, 0.98}
+\definecolor{termbg}{rgb}{0.14, 0.15, 0.17}
+\definecolor{termfg}{rgb}{0.92, 0.92, 0.92}
+
+\lstdefinestyle{erlstyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen}\itshape,
+    keywordstyle=\color{codeblue}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codegray},
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,                 
+    keepspaces=true,                 
+    tabsize=2,
+    frame=single,
+    rulecolor=\color{black!10}
+}
+\lstset{style=erlstyle}
+
+\tcbset{
+    terminalbox/.style={
+        colback=termbg,
+        colupper=termfg,
+        colframe=black!65,
+        arc=3pt,
+        boxrule=1pt,
+        fontupper=\ttfamily\footnotesize,
+        left=6pt, right=6pt, top=5pt, bottom=5pt
+    }
+}
+
+\title{\textbf{Chordy: A Distributed Hash Table}}
+\author{\textbf{Rodrigo Perestrelo, Lennard Last} \\ ID2201 Distributed Systems, Basic Course}
+\date{\today{}}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+The objective of this assignment is to design, implement, and empirically evaluate \textbf{Chordy}, a structured Distributed Hash Table based on the Chord protocol scheme. The system organizes autonomous Erlang processes into an overlay identifier ring where keys and nodes share a uniform discrete space.
+
+\section{Iterative Architectural Progression}
+
+We developed the system through two foundational stages, transitioning from topological ring maintenance to a fully functioning distributed storage engine.
+
+\subsection{Iteration 1: Topology and Self-Stabilizing Ring (\texttt{node1})}
+The baseline architecture, implemented in modules \texttt{key} and \texttt{node1}, maintains a circular overlay network without data storage.
+\begin{itemize}
+    \item \textbf{Circular Identifier Space:} Nodes generate 30-bit random identifiers ($1$ to $1\,000\,000\,000$). The predicate \texttt{key:between(Key, From, To)} resolves circular intervals $(From, To]$ by handling standard boundaries ($From < To$), wraparounds ($From > To$), and the full-circle degenerate identity ($From == To$).
+    \item \textbf{Asynchronous State Maintenance:} Each node tracks its current identifier, a predecessor pointer, and a successor pointer as $\{Key, Pid\}$ tuples. Ring integrity is maintained asynchronously via four core message primitives:
+    \begin{itemize}
+        \item \texttt{\{key, Qref, Peer\}}: Resolves the key of a bootstrap node during connection.
+        \item \texttt{\{request, Peer\}}: Solicits predecessor information from the successor.
+        \item \texttt{\{status, Pred\}}: Transmits predecessor status to the querying predecessor.
+        \item \texttt{\{notify, New\}}: Proposes a friendly candidate as a potential new predecessor.
+    \end{itemize}
+    \item \textbf{Periodic Stabilization:} Driven by \texttt{timer:send\_interval/3}, each node queries its successor's predecessor via \texttt{request}. If an intermediate node $X$ is discovered such that $X \in (Id, Successor]$, the querying node adopts $X$ as its successor. It then informs the successor of its presence via \texttt{notify}.
+\end{itemize}
+
+\begin{lstlisting}[language=erlang]
+stabilize(Pred, Id, Successor) ->
+    {Skey, Spid} = Successor,
+    case Pred of
+        nil ->
+            Spid ! {notify, {Id, self()}},
+            Successor;
+        {Id, _} -> Successor;
+        {Skey, _} ->
+            Spid ! {notify, {Id, self()}},
+            Successor;
+        {Xkey, Xpid} ->
+            case key:between(Xkey, Id, Skey) of
+                true ->
+                    Xpid ! {request, self()},
+                    {Xkey, Xpid};
+                false ->
+                    Spid ! {notify, {Id, self()}},
+                    Successor
+            end
+    end.
+\end{lstlisting}
+
+\noindent \textbf{Structural Insight:} When a node points to itself ($Predecessor == Id$), the condition $From == To$ triggers true in \texttt{key:between/3}, ensuring that incoming nodes are accepted into single-node rings without explicit corner-case branches.
+
+\subsection{Iteration 2: Distributed Store and Dynamic Handover (\texttt{node2})}
+Module \texttt{node2} integrates a local key-value repository, delegating key-range ownership across ring participants:
+\begin{itemize}
+    \item \textbf{Responsibility Invariant:} A node $Id$ with predecessor $Pkey$ owns the half-open interval $(Pkey, Id]$. Operations on keys falling outside this interval are forwarded sequentially to the immediate successor \texttt{Spid}.
+    \item \textbf{Transparent Client Routing:} Client queries (\texttt{\{add, Key, Value, Qref, Client\}} and \texttt{\{lookup, Key, Qref, Client\}}) carry a unique tag \texttt{Qref}. When forwarded along the ring, the owning node sends the completion response directly to \texttt{Client}, eliminating intermediate return hops.
+    \item \textbf{Dynamic Storage Delegation (\texttt{handover}):} When a new predecessor $Nkey$ joins, the interval $(Pkey, Id]$ is partitioned. The local node retains $(Nkey, Id]$ and delegates $(Pkey, Nkey]$ by dispatching a \texttt{\{handover, Rest\}} message to $Npid$.
+\end{itemize}
+
+\begin{lstlisting}[language=erlang]
+handover(Id, Store, Nkey, Npid) ->
+    {Keep, Rest} = storage:split(Nkey, Id, Store),
+    Npid ! {handover, Rest},
+    Keep.
+\end{lstlisting}
+
+\section{Empirical Evaluation}
+
+\subsection{Evaluation 1: Single-Node and Multi-Node Probe Verification}
+We initialized a distributed ring across separate Erlang VM nodes to measure ring transit latency and verify pointer convergence using a circumnavigating probe message:
+\begin{tcolorbox}[terminalbox]
+(first@127.0.0.1)1> P1 = node1:start(100). \\
+<0.94.0> \\
+(first@127.0.0.1)2> register(chord\_root, P1). \\
+true \\
+(first@127.0.0.1)3> chord\_root ! probe. \\
+probe \\
+Probe returned in 419 microseconds after 3 hops: [<10738.94.0>, <10737.94.0>, <0.94.0>]
+\end{tcolorbox}
+\textbf{Observed Result:} The probe completed a full circle across 3 independent OS-level Erlang processes in 419 microseconds, confirming that periodic stabilization converged into a consistent, closed ring topology.
+
+\subsection{Evaluation 2: Scalability and Performance Profiling}
+We executed sequential and concurrent benchmark routines to evaluate the system under varying ring topologies ($N=1$, $N=2$, and $N=4$ nodes) storing $1\,000$ elements:
+
+\begin{tcolorbox}[terminalbox]
+8> benchmark:benchmark(1000, N1).
+Starting addition of 1000 elements...
+Addition completed in 6361 us (6 ms)
+Starting lookup of 1000 elements...
+Lookup completed in 1818 us (1 ms)
+{6361, 1818}
+
+11> benchmark:benchmark(1000, N1).
+Starting addition of 1000 elements...
+Addition completed in 9713 us (9 ms)
+Starting lookup of 1000 elements...
+Lookup completed in 2430 us (2 ms)
+{9713, 2430}
+
+15> benchmark:benchmark(1000, N1).
+Starting addition of 1000 elements...
+Addition completed in 8413 us (8 ms)
+Starting lookup of 1000 elements...
+Lookup completed in 2697 us (2 ms)
+{8413, 2697}
+
+16> benchmark:benchmark(1000, N1, 4).
+Starting benchmark with 4 clients (250 keys each)...
+Parallel benchmark completed in 12469 us (12 ms)
+12469
+\end{tcolorbox}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Configuration} & \textbf{Add Time ($\mu$s)} & \textbf{Lookup Time ($\mu$s)} & \textbf{Avg Add/Op} & \textbf{Avg Lookup/Op} \\ \midrule
+1 Node ($1\,000$ keys)  & $6\,361$  & $1\,818$ & $6.36\,\mu$s & $1.82\,\mu$s \\
+2 Nodes ($1\,000$ keys) & $9\,713$  & $2\,430$ & $9.71\,\mu$s & $2.43\,\mu$s \\
+4 Nodes ($1\,000$ keys) & $8\,413$  & $2\,697$ & $8.41\,\mu$s & $2.70\,\mu$s \\
+4 Concurrent Clients    & \multicolumn{2}{c}{$12\,469\,\mu$s (Total Pipeline)} & \multicolumn{2}{c}{Contention on $N_1$ Mailbox} \\ \bottomrule
+\end{tabular}
+\caption{Empirical benchmark timings across ring configurations.}
+\end{table}
+
+\subsection{Evaluation 3: Architectural Analysis and Limiting Factors}
+\begin{itemize}
+    \item \textbf{Single-Node vs Multi-Node Overhead:} In a single-node configuration, $100\%$ of requests are local, eliminating inter-process message passing. When scaling to 2 nodes, approximately $50\%$ of operations require forwarding to the successor, increasing addition latency from $6\,361\,\mu$s to $9\,713\,\mu$s.
+    \item \textbf{Local Complexity Mitigation ($N=4$):} Expanding the ring to 4 nodes reduced addition latency to $8\,413\,\mu$s. Because each node stores approximately $250$ keys instead of $1\,000$, the $O(K)$ traversal cost of \texttt{lists:keystore/4} drops significantly, offsetting message routing overhead.
+    \item \textbf{Successor-Hop Forwarding Penalty:} Lookup latency rose monotonically ($1\,818\,\mu\text{s} \rightarrow 2\,430\,\mu\text{s} \rightarrow 2\,697\,\mu\text{s}$). Because our ring routes via immediate successors ($O(N)$ hops) without finger routing tables ($O(\log N)$), each additional node lengthens the traversal path.
+    \item \textbf{The Mailbox Bottleneck:} When 4 client processes submit requests concurrently through a single entrypoint ($N_1$), latency climbs to $12\,469\,\mu$s. The entry node's mailbox serializes all inbound traffic, creating an architectural bottleneck.
+\end{itemize}
+
+\section{Conclusions}
+
+This laboratory demonstrates the mechanics of structured decentralized storage over an identifier ring. Decentralized ring stabilization allows autonomous nodes to dynamically self-organize without a centralized coordinator. While distributed partitioning divides local storage costs, linear successor routing incurs an $O(N)$ hop penalty, and single-entry client access introduces mailbox serialization. Achieving high-throughput scalability requires finger-table routing and multi-point client dispatching.
+
+\end{document}
