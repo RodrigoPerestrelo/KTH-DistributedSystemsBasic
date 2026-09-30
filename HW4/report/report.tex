@@ -195,7 +195,56 @@ leader 2: crash \\
 
 \section{Optional Task for Extra Bonus: What Could Possibly Go Wrong}
 
-\noindent \textit{[Placeholder.]}
+Erlang only guarantees that messages between two processes arrive in FIFO order, not that they arrive at all. Our implementations \texttt{gms1}--\texttt{gms3} silently rely on reliable delivery. If a \texttt{\{msg, N, Msg\}} is lost, the slave never delivers message $N$, and all later messages stay unmatched in its mailbox, so the slave stalls. Lost views, join requests or acknowledgments cause similar problems. To handle this, we extended \texttt{gms3} to \texttt{gms4} with acknowledgments and retransmission, in the same way TCP builds reliable delivery on top of an unreliable channel.
+
+\subsection{Implementation}
+On the slave side, an acknowledgment is sent back to the leader whenever a message or view is received. Duplicates (\texttt{I < N}) are acknowledged again, because a resend usually means that the earlier ack was lost:
+\begin{lstlisting}[language=erlang]
+{msg, I, _} when I < N ->
+    send_ack(Leader, I),
+    slave(Id, Master, Leader, N, Last, Slaves, Group);
+{msg, N, Msg} ->
+    Master ! Msg,
+    send_ack(Leader, N),
+    ...
+{view, I, _, _} when I < N ->
+    send_ack(Leader, I),
+    slave(Id, Master, Leader, N, Last, Slaves, Group);
+{view, N, [Leader|Slaves2], Group2} ->
+    Master ! {view, Group2},
+    send_ack(Leader, N),
+    ...
+\end{lstlisting}
+
+The leader stores a \texttt{MsgBuffer} containing every message and view it has sent, and a list \texttt{Acks} with the highest acknowledged sequence number of each slave. Every time an ack arrives, the entry of that slave is updated (never decreased) and the buffer is pruned: a message is removed once all current slaves have acknowledged it, i.e.\ when its number is at most the minimum of the acks.
+
+Whenever a defined \texttt{resend\_interval} has elapsed, the leader receives a \texttt{resend} message from a timer started with \texttt{erlang:send\_after/3}. Upon a \texttt{resend}, the \texttt{MsgBuffer} is checked against \texttt{Acks}, and every buffered message with a number above the last ack of a slave is sent to that slave again. Since the slaves already filter duplicates with the \texttt{I < N} clauses of \texttt{gms3}, retransmissions are idempotent.
+
+Two details concern joins and elections. A joining slave is registered with ack $N-1$, where $N$ is the number of its first view, so that the view stays in the buffer until the joiner acknowledges it. A newly elected leader starts its own resend timer and initializes its buffer with \texttt{Last} and the new view, so that they can be resent if the election broadcast was lost.
+
+To test the mechanism, all broadcasts, resends and acks go through a send function that drops each message with probability $1/100$. Each dropped message and resent is logged to the terminal:
+\begin{tcolorbox}[terminalbox]
+1> test:more(5, gms4, 1000). \\
+node <0.94.0>: dropped a msg message \\
+<0.87.0> \\
+leader 1: resending 8 message(s) to <0.94.0> \\
+node <0.96.0>: dropped a ack message \\
+node <0.92.0>: dropped a msg message \\
+leader 1: resending 1 message(s) to <0.92.0> \\
+node <0.96.0>: dropped a ack message \\
+leader 1: resending 1 message(s) to <0.92.0> \\
+\end{tcolorbox}
+The output shows: whenever a message is not acknowledged because the initial dispatch of the message or the subsequent ack failed, it is resent.
+\subsection{Performance Impact}
+\begin{itemize}
+    \item \textbf{Message overhead:} Every multicast causes one additional ack per slave. Since an ack covers all lower numbers, acks could be batched or sent cumulatively to reduce this.
+    \item \textbf{Latency:} A lost message is delayed by up to one resend interval plus the retransmission. A short interval recovers quickly but causes needless duplicates when the round trip is longer than the interval, while a long one makes recovery slow.
+    \item \textbf{Memory:} The leader's buffer size depends on the slowest slave, and a slave that is alive but stuck makes it grow.
+    \item \textbf{Throughput:} The leader already serialises all multicasts, and it now also handles acks, buffer pruning and retransmissions, which increases its load.
+\end{itemize}
+
+% \subsection{Remaining Limitations}
+% The implementation does not cover everything: a lost \texttt{join} request still makes the joiner give up after the timeout, and a slave's \texttt{\{mcast, Msg\}} to the leader is not acknowledged. A crashed slave never acknowledges anything, so it blocks pruning and the buffer keeps growing; it would have to be detected, for example with a monitor, and removed from \texttt{Slaves}.
 
 \section{Conclusions}
 
