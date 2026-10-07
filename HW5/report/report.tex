@@ -184,6 +184,78 @@ Parallel benchmark completed in 12469 us (12 ms)
     \item \textbf{The Mailbox Bottleneck:} When 4 client processes submit requests concurrently through a single entrypoint ($N_1$), latency climbs to $12\,469\,\mu$s. The entry node's mailbox serializes all inbound traffic, creating an architectural bottleneck.
 \end{itemize}
 
+\section{Handling of Node Failure}
+In the third iteration of \textbf{Chordy}, the handling of failures and subsequent self-healing was added. The implementation has the following three key additions.
+\subsection{Neighbor Monitoring}
+Each node now monitors its neighbors using Erlang's built-in \texttt{monitor} mechanism. This way a node will be notified when its predecessor or successor fails by receiving a \texttt{\{'DOWN', Ref, ..\}} message and can react accordingly.
+\subsection{Next Pointer}
+During stabilization a node will now also pass its own successor in the request reply and the recipient of the status message will save it in the \texttt{Next} variable of the node. This pointer is needed because a node that loses its successor would otherwise have no way to reach the rest of the ring. When a closer successor is found during stabilization, the old successor becomes the new \texttt{Next}.
+\begin{lstlisting}[language=erlang]
+request(Peer, Predecessor, {Skey, _, Spid}) ->
+    case Predecessor of
+        nil ->
+            Peer ! {status, nil, {Skey, Spid}};
+        {Pkey, _, Ppid} ->
+            Peer ! {status, {Pkey, Ppid}, {Skey, Spid}}
+    end.
+\end{lstlisting}
+\begin{lstlisting}[language=erlang]
+node(Id, Predecessor, Successor, Next, Store) ->
+    receive
+        ...
+        {status, Pred, Nx} ->
+            {Succ, Nxt} = stabilize(Pred, Nx, Id, Successor),
+            node(Id, Predecessor, Succ, Nxt, Store);
+\end{lstlisting}
+\subsection{Failure Handling}
+When the successor fails, the node will set \texttt{Next} as its new successor and trigger stabilization to inform its new successor and receive a new \texttt{Next} pointer. When the predecessor fails, the node will just set it to \texttt{nil} and wait for the new predecessor's stabilization.
+\begin{lstlisting}[language=erlang]
+down(Ref, {_, Ref, _}, Successor, Next) ->
+    %% Predecessor died
+    {nil, Successor, Next};
+down(Ref, Predecessor, {_, Ref, _}, {Nkey, Npid}) ->
+    %% Successor died
+    drop(Ref),
+    Nref = monitor(Npid),
+    self() ! stabilize,
+    {Predecessor, {Nkey, Nref, Npid}, nil}.
+\end{lstlisting}
+
+\section{Replication}
+The self-healing capabilities in the third iteration may keep the ring up and running, but a node that fails takes all its data with it. To counter this a simple form of replication is implemented in the fourth iteration.
+
+Now every node will store a \texttt{Replica} of its predecessor's store. This is a sensible design decision, since upon exit of a node, its successor is now responsible for its data and thus can just move \texttt{Replica} into its own \texttt{Store}.
+\begin{lstlisting}[language=erlang]
+down(Ref, {_, Ref, _}, Successor, Next, Store, Replica) ->
+    %% Predecessor died
+    MergedStore = storage:merge(Store, Replica),
+    NewReplica = storage:create(),
+    {nil, Successor, Next, MergedStore, NewReplica};
+\end{lstlisting}
+When a node adds a key to its own store, it forwards the pair to its successor in a \texttt{replicate} message. The successor stores it in its \texttt{Replica} and sends the confirmation to the client, so the client only receives \texttt{ok} once both copies exist.
+\begin{lstlisting}[language=erlang]
+{replicate, Key, Value, Qref, Client} ->
+    NewReplica = storage:add(Key, Value, Replica),
+    Client ! {Qref, ok},
+    node(Id, Predecessor, Successor, Next, Store, NewReplica);
+\end{lstlisting}
+To make sure replication stays consistent through changes of the ring, the \texttt{handover} function now also returns the part of the storage that is the responsibility of the new predecessor and the \texttt{notify} function then returns it to be set as the new \texttt{Replica}.
+\begin{lstlisting}[language=erlang]
+handover(Id, Store, Nkey, Npid) ->
+    {Keep, Rest} = storage:split(Nkey, Id, Store),
+    Npid ! {handover, Rest},
+    {Keep, Rest}.
+\end{lstlisting}
+\begin{lstlisting}[language=erlang]
+{notify, New} ->
+    case notify(New, Id, Predecessor, Store) of
+        {Pred, NewStore, nil} ->
+            node(Id, Pred, Successor, Next, NewStore, Replica);
+        {Pred, NewStore, NewReplica} ->
+            node(Id, Pred, Successor, Next, NewStore, NewReplica)
+    end;
+\end{lstlisting}
+
 \section{Conclusions}
 
 This laboratory demonstrates the mechanics of structured decentralized storage over an identifier ring. Decentralized ring stabilization allows autonomous nodes to dynamically self-organize without a centralized coordinator. While distributed partitioning divides local storage costs, linear successor routing incurs an $O(N)$ hop penalty, and single-entry client access introduces mailbox serialization. Achieving high-throughput scalability requires finger-table routing and multi-point client dispatching.
