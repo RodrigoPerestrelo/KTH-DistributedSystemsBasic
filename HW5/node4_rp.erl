@@ -145,6 +145,7 @@ notify({Nkey, Npid}, Id, Predecessor, Store) ->
                 true ->
                     drop(Pref),
                     {Keep, Rest} = handover(Id, Store, Nkey, Npid),
+                    Nref = monitor(Npid),
                     {{Nkey, Nref, Npid}, Keep, Rest};
                 false ->
                     {Predecessor, Store, nil}
