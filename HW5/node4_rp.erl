@@ -60,7 +60,7 @@ node(Id, Predecessor, Successor, Next, Store, Replica) ->
             stabilize(Successor),
             node(Id, Predecessor, Successor, Next, Store, Replica);
         status ->
-            io:format("Node ~p:~n  Predecessor: ~p~n  Successor: ~p~n Next: ~p~n", [Id, Predecessor, Successor, Next]),
+            io:format("Node ~p:~n  Predecessor: ~p~n  Successor: ~p~n Next: ~p~n Store: ~p~n Replica: ~p~n", [Id, Predecessor, Successor, Next, Store, Replica]),
             node(Id, Predecessor, Successor, Next, Store, Replica);
         terminate ->
             io:format("Node ~p terminating.~n", [Id]),
